@@ -1,0 +1,235 @@
+name: CICD-Pipeline
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+jobs:
+  codeQL-analyze:
+    name: codeQL analyze
+    runs-on: [self-hosted]
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["java"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - uses: actions/setup-java@v3
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          overwrite-settings: false
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v4.5
+        with:
+          maven-version: 3.8.6
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended,security-and-quality
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v2
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+  java-maven-Sonar:
+    name: sonar scan
+    runs-on: [uhg-runner]
+    needs: codeQL-analyze
+    if: ${{ success() }}
+    steps:
+      - name: Cleanup #https://github.com/actions/checkout/issues/211
+        run: |
+          sudo chown -R $USER:$USER $GITHUB_WORKSPACE
+      - name: Checkout #https://github.com/actions/checkout/issues/211
+        uses: actions/checkout@v3
+        with:
+          #Full git history is needed for Sonar blame
+          fetch-depth: 0
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: 21
+          distribution: "adopt"
+          cache: maven
+      - name: Setup Maven
+        uses: uhg-actions/setup-maven@v4.4
+        with:
+          maven-version: 3.6.0
+      - name: Cache
+        uses: actions/cache@v3
+        with:
+          path: /home/runner/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+      - name: Build and Sonar Analyze
+        env:
+          GITHUB_TOKEN: ${{ secrets.GHEC_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: mvn -B -e verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -DskipTests -Dsonar.projectBaseDir=src -Dsonar.buildbreaker.skip=true -Dmaven.repo.local=/home/runner/.m2/repository
+      #run: mvn clean verify
+      - name: SonarQube Scan
+        uses: uhg-actions/sonarqube-scan-action@master
+        with:
+          projectBaseDir: .
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.buildbreaker.skip=true
+            -Dsonar.projectKey=com.optumrx.m3p:orx-m3p-experience-api
+            -Dsonar.sources=.
+            -Dsonar.verbose=true
+            -Dsonar.java.binaries=target/classes
+            -Dsonar.verbose=true
+        env:
+          SONAR_TOKEN: "${{ secrets.SONAR_TOKEN }}"
+          SONAR_HOST_URL: "${{ secrets.SONAR_HOST_URL }}"
+      - name: SonarQube Quality Gate check
+        id: sonarqube-quality-gate-check
+        uses: uhg-actions/sonarqube-quality-gate-action@master
+        #Force to fail step after specific time.
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }} #OPTIONAL
+          #Optionally you can use the output from the Quality Gate in another step.
+          #The possible outputs of the `quality-gate-status` variable are `PASSED`, `WARN` or `FAILED`.
+      - name: "Example show SonarQube Quality Gate Status value"
+        run: echo "The Quality Gate status is ${{ steps.sonarqube-quality-gate-check.outputs.quality-gate-status }}"
+
+  build-dev:
+    name: build DEV
+    permissions:
+      contents: read
+      id-token: write
+      # runs-on: ubuntu-latest
+    runs-on: uhg-runner
+    needs: java-maven-Sonar
+    if: ${{ success() }}
+    environment: Development
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: "Log into Azure using github secret AZURE_CREDENTIALS"
+        uses: Azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: "Run az commands"
+        shell: bash
+        run: |
+          az account show
+      - name: Replace variables in the properties file
+        run: |
+          FILES=${{ github.workspace }}/src/main/resources/application*
+          for file in $FILES; do
+            # Extract placeholders from the file
+            PLACEHOLDERS=$(grep -oE '__(\w+(-\w+)*)__' $file | sort -u) || continue
+            echo "*****************************"
+            echo "Updating this file: $file"
+            for placeholder in $PLACEHOLDERS; do
+              # Remove surrounding '__' to get the secret name
+              echo "Updating this variable: ${placeholder}"
+              SECRET_NAME=${placeholder//__}
+              SECRET_VALUE=$(az keyvault secret show --name $SECRET_NAME --vault-name orx-pbm-m3p-dev-us-c-kv --query value) || continue
+              # Replace the placeholder with the secret value in the file
+              if [ $? -eq 0 ]; then
+                # Replace the placeholder with the secret value in the file
+                echo "----------------------------------------------"
+                echo "place holder: ${placeholder}"
+                echo "secret value: ${SECRET_VALUE}"
+                sed -i "s|${placeholder}|${SECRET_VALUE//\"}|g" "$file"   
+                echo "Success"
+                echo "----------------------------------------------"
+              else
+                echo "----------------------------------------------"
+                echo "Warning: Secret $SECRET_NAME not found in key vault. Placeholder not replaced."
+                echo "----------------------------------------------"
+              fi
+            done
+            cat $file
+            echo "*****************************"
+          done
+        shell: bash
+      - name: Set up JDK Version
+        uses: actions/setup-java@v2
+        with:
+          java-version: "21"
+          distribution: "temurin"
+          cache: maven
+      - name: Maven Clean Install
+        run: |
+          sudo apt update -qq && sudo apt install -y -qq maven
+          mvn -version
+          mvn -U clean install -q
+        shell: bash
+      - name: Docker Login to Azure Container Registry
+        run: |
+          echo "${{ secrets.ACR_PASSWORD }}" | docker login orxpbmm3puscdevacr.azurecr.io --username ${{ secrets.ACR_USERNAME }} --password-stdin
+        shell: bash
+      - name: Build Docker image
+        run: docker build --build-arg --force-rm -t orxpbmm3puscdevacr.azurecr.io/orx-m3p-experience-api:${{ github.run_number }} -f ./deployment/development/Dockerfile .
+        shell: bash
+      - name: ACR Login
+        run: az acr login --name orxpbmm3puscdevacr
+        shell: bash
+      - name: Push Docker image to Azure Container Registry
+        run: docker push orxpbmm3puscdevacr.azurecr.io/orx-m3p-experience-api:${{ github.run_number }}
+        shell: bash
+  deploy-dev:
+    name: Deploy DEV
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    # runs-on: ubuntu-latest
+    runs-on: uhg-runner
+    needs: build-dev
+    if: ${{ github.event_name == 'push' && github.event_name == 'pull_request'}}
+    environment: Development
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Replace Tokens
+        run: sed -i "s/__IMAGE_VERSION__/${{ github.run_number }}/g" ${{ github.workspace }}/deployment/development/deployment.yml
+        shell: bash
+      # Logs in with your Azure credentials
+      - name: "Log into Azure using github secret AZURE_CREDENTIALS"
+        uses: Azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: "Run az commands"
+        shell: bash
+        run: |
+          az account show
+      # Use kubelogin to configure your kubeconfig for Azure auth
+      - name: Set up kubelogin for non-interactive login
+        uses: azure/use-kubelogin@v1
+        with:
+          kubelogin-version: "v0.0.25"
+      # Retrieves your Azure Kubernetes Service cluster's kubeconfig file
+      - name: Get K8s context
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: "orx-pbm-m3p-dev-us-c-rg"
+          cluster-name: "orx-pbm-m3p-dev-us-c-api-aks"
+          admin: "false"
+          use-kubelogin: "true"
+      # Deploys application based on given manifest file
+      - name: Deploys application
+        uses: Azure/k8s-deploy@v4
+        with:
+          action: deploy
+          manifests: ${{ github.workspace }}/deployment/development/deployment.yml
+          namespace: "m3p-dev"
+          images: |
+            orxpbmm3puscdevacr.azurecr.io/orx-m3p-experience-api:${{ github.run_number }}
