@@ -127,7 +127,7 @@ jobs:
       id-token: write
       # runs-on: ubuntu-latest
     runs-on: uhg-runner
-    #needs: java-maven-Sonar
+    #needs: junit
     environment: Development
     steps:
       - name: Checkout code
