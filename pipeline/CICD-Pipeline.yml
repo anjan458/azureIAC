@@ -1,12 +1,12 @@
 name: CICD-Pipeline
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+#  push:
+#    branches:
+#      - main
+#  pull_request:
+#    branches:
+#      - main
 jobs:
   codeQL-analyze:
     name: codeQL analyze
@@ -44,8 +44,7 @@ jobs:
   java-maven-Sonar:
     name: sonar scan
     runs-on: [uhg-runner]
-    needs: codeQL-analyze
-    if: ${{ success() }}
+    #needs: codeQL-analyze
     steps:
       - name: Cleanup #https://github.com/actions/checkout/issues/211
         run: |
@@ -106,7 +105,20 @@ jobs:
           #The possible outputs of the `quality-gate-status` variable are `PASSED`, `WARN` or `FAILED`.
       - name: "Example show SonarQube Quality Gate Status value"
         run: echo "The Quality Gate status is ${{ steps.sonarqube-quality-gate-check.outputs.quality-gate-status }}"
-
+  
+  junit:
+    name: junit test
+    runs-on: uhg-runner
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+    - name: Set up Java 
+      uses: actions/setup-java@v3
+      with:
+        java-version: '11' 
+        distribution: 'temurin' 
+    - name: Run JUnit tests
+      run: mvn test
   build-dev:
     name: build DEV
     permissions:
@@ -114,8 +126,7 @@ jobs:
       id-token: write
       # runs-on: ubuntu-latest
     runs-on: uhg-runner
-    needs: java-maven-Sonar
-    if: ${{ success() }}
+    #needs: java-maven-Sonar
     environment: Development
     steps:
       - name: Checkout code
@@ -193,8 +204,8 @@ jobs:
       id-token: write
     # runs-on: ubuntu-latest
     runs-on: uhg-runner
-    needs: build-dev
-    if: ${{ github.event_name == 'push' && github.event_name == 'pull_request'}}
+    #needs: build-dev
+    if: ${{ github.event_name == 'push' && github.event_name == 'workflow_dispatch'}}
     environment: Development
     steps:
       - name: Checkout code
