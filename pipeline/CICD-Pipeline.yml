@@ -118,6 +118,21 @@ jobs:
         distribution: 'temurin' 
     - name: Run JUnit tests
       run: mvn test
+
+  auto-merge:
+    name: auto merge
+    runs-on: uhg-runner
+    needs: [ codeQL-analyze , java-maven-Sonar , junit]
+    if: ${{ always() }}
+    permissions:
+      contents: write
+    steps:
+      - id: automerge
+        name: automerge
+        uses: pascalgn/automerge-action@v0.16.3 
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
   build-dev:
     name: build DEV
     permissions:
@@ -125,8 +140,8 @@ jobs:
       id-token: write
       # runs-on: ubuntu-latest
     runs-on: uhg-runner
-    needs: [ codeQL-analyze , java-maven-Sonar , junit]
-    if: ${{ always() }}
+    needs: auto-merge
+    if: ${{ success() }}
     environment: Development
     steps:
       - name: Checkout code
@@ -244,4 +259,3 @@ jobs:
           namespace: "m3p-dev"
           images: |
             orxpbmm3puscdevacr.azurecr.io/orx-m3p-experience-api:${{ github.run_number }}
-
