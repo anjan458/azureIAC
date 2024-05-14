@@ -44,7 +44,6 @@ jobs:
   java-maven-Sonar:
     name: sonar scan
     runs-on: [uhg-runner]
-    #needs: codeQL-analyze
     steps:
       - name: Cleanup #https://github.com/actions/checkout/issues/211
         run: |
@@ -109,7 +108,6 @@ jobs:
   junit:
     name: junit test
     runs-on: uhg-runner
-    #needs:java-maven-Sonar
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
@@ -127,7 +125,8 @@ jobs:
       id-token: write
       # runs-on: ubuntu-latest
     runs-on: uhg-runner
-    #needs: junit
+    needs: [ codeQL-analyze , java-maven-Sonar , junit]
+    if: ${{ always() }}
     environment: Development
     steps:
       - name: Checkout code
@@ -205,8 +204,8 @@ jobs:
       id-token: write
     # runs-on: ubuntu-latest
     runs-on: uhg-runner
-    #needs: build-dev
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch'}}
+    needs: build-dev
+    if: ${{ github.event_name == 'push'|| github.event_name == 'workflow_dispatch'}}
     environment: Development
     steps:
       - name: Checkout code
@@ -245,3 +244,4 @@ jobs:
           namespace: "m3p-dev"
           images: |
             orxpbmm3puscdevacr.azurecr.io/orx-m3p-experience-api:${{ github.run_number }}
+
