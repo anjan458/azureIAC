@@ -119,19 +119,19 @@ jobs:
     - name: Run JUnit tests
       run: mvn test
 
-  auto-merge:
-    name: auto merge
-    runs-on: uhg-runner
-    needs: [ codeQL-analyze , java-maven-Sonar , junit]
-    if: ${{ always() }}
-    permissions:
-      contents: write
-    steps:
-      - id: automerge
-        name: automerge
-        uses: pascalgn/automerge-action@v0.16.3 
-        env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+#  auto-merge:
+#    name: auto merge
+#    runs-on: uhg-runner
+#    needs: [ codeQL-analyze , java-maven-Sonar , junit]
+#    if: ${{ always() }}
+#    permissions:
+#      contents: write
+#    steps:
+#      - id: automerge
+#        name: automerge
+#        uses: pascalgn/automerge-action@v0.16.3 
+#        env:
+#          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 
   build-dev:
     name: build DEV
@@ -140,7 +140,7 @@ jobs:
       id-token: write
       # runs-on: ubuntu-latest
     runs-on: uhg-runner
-    needs: auto-merge
+    needs: [ codeQL-analyze , java-maven-Sonar , junit]
     if: ${{ success() }}
     environment: Development
     steps:
