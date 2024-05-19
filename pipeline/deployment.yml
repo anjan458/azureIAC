@@ -1,0 +1,269 @@
+name: Deployment to Azure k8s and test
+on:
+  workflow_run:
+    workflows: ["CodeQL Analysis", "SonarQube Scan"]
+    types:
+      - completed
+    branches: [ "develop" ]
+ 
+jobs:
+  build-dev:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: uhg-runner
+    permissions:
+      contents: read
+      id-token: write
+    environment: Development
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+ 
+    - name: 'Log into Azure using github secret AZURE_CREDENTIALS'
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: 'Run az commands'
+      shell: bash
+      run: |
+        az account show
+ 
+    - name: Replace variables in the properties file
+      run: |
+        FILES=${{ github.workspace }}/src/main/resources/application*
+        for file in $FILES; do
+          PLACEHOLDERS=$(grep -oE '__(\w+(-\w+)*)__' $file | sort -u) || continue
+          echo "*****************************"
+          echo "Updating this file: $file"
+          for placeholder in $PLACEHOLDERS; do
+            echo "Updating this variable: ${placeholder}"
+            SECRET_NAME=${placeholder//__}
+            SECRET_VALUE=$(az keyvault secret show --name $SECRET_NAME --vault-name orx-pbm-m3p-dev-us-c-kv --query value) || continue
+            if [ $? -eq 0 ]; then
+              echo "----------------------------------------------"
+              echo "place holder: ${placeholder}"
+              echo "secret value: ${SECRET_VALUE}"
+              sed -i "s|${placeholder}|${SECRET_VALUE//\"}|g" "$file"   
+              echo "Success"
+              echo "----------------------------------------------"
+            else
+              echo "----------------------------------------------"
+              echo "Warning: Secret $SECRET_NAME not found in key vault. Placeholder not replaced."
+              echo "----------------------------------------------"
+            fi
+          done
+          cat $file
+          echo "*****************************"
+        done
+      shell: bash
+ 
+    - name: Set up JDK Version
+      uses: actions/setup-java@v2
+      with:
+        java-version: '21'    
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Maven Clean Install
+      run: | 
+        sudo apt update -qq && sudo apt install -y -qq maven
+        mvn -version
+        mvn -U clean install -q
+      shell: bash
+ 
+    - name: Docker Login to Azure Container Registry
+      run: |
+        echo "${{ secrets.ACR_PASSWORD }}" | docker login orxpbmm3puscdevacr.azurecr.io --username ${{ secrets.ACR_USERNAME }} --password-stdin
+      shell: bash
+ 
+    - name: Build Docker image
+      run: docker build --build-arg --force-rm -t orxpbmm3puscdevacr.azurecr.io/orx-m3p-experience-api:${{ github.run_number }} -f ./deployment/development/Dockerfile .
+      shell: bash
+ 
+    - name: ACR Login
+      run: az acr login --name orxpbmm3puscdevacr
+      shell: bash
+ 
+    - name: Push Docker image to Azure Container Registry
+      run: docker push orxpbmm3puscdevacr.azurecr.io/orx-m3p-experience-api:${{ github.run_number }}
+      shell: bash
+
+  build-test:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: uhg-runner
+    environment: Testing
+ 
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+ 
+    - name: 'Log into Azure using github secret AZURE_CREDENTIALS'
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+ 
+    - name: 'Run az commands'
+      shell: bash
+      run: |
+        az account show
+ 
+    - name: Replace variables in the properties file
+      run: |
+        FILES=${{ github.workspace }}/src/main/resources/application*
+        for file in $FILES; do
+          PLACEHOLDERS=$(grep -oE '__(\w+(-\w+)*)__' $file | sort -u) || continue
+          echo "*****************************"
+          echo "Updating this file: $file"
+          for placeholder in $PLACEHOLDERS; do
+            echo "Updating this variable: ${placeholder}"
+            SECRET_NAME=${placeholder//__}
+            SECRET_VALUE=$(az keyvault secret show --name $SECRET_NAME --vault-name orx-pbm-m3p-test-us-c-kv --query value) || continue
+            if [ $? -eq 0 ]; then
+              echo "----------------------------------------------"
+              echo "place holder: ${placeholder}"
+              echo "secret value: ${SECRET_VALUE}"
+              sed -i "s|${placeholder}|${SECRET_VALUE//\"}|g" "$file"   
+              echo "Success"
+              echo "----------------------------------------------"
+            else
+              echo "----------------------------------------------"
+              echo "Warning: Secret $SECRET_NAME not found in key vault. Placeholder not replaced."
+              echo "----------------------------------------------"
+            fi
+          done
+          cat $file
+          echo "*****************************"
+        done
+      shell: bash
+ 
+    - name: Set up JDK Version
+      uses: actions/setup-java@v2
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+        cache: maven
+ 
+    - name: Maven Clean Install
+      run: |
+        sudo apt update -qq && sudo apt install -y -qq maven
+        mvn -version
+        mvn -U clean install -q
+        ls
+        cd target
+        ls
+      shell: bash
+ 
+    - name: Docker Login to Azure Container Registry
+      run: |
+        echo "${{ secrets.ACR_PASSWORD }}" | docker login orxpbmm3puscdevacr.azurecr.io --username ${{ secrets.ACR_USERNAME }} --password-stdin
+      shell: bash
+ 
+    - name: Build Docker image
+      run: docker build --build-arg --force-rm -t orxpbmm3puscdevacr.azurecr.io/test/orx-m3p-experience-api:${{ github.run_number }} -f ./deployment/development/Dockerfile .
+      shell: bash
+ 
+    - name: ACR Login
+      run: az acr login --name orxpbmm3puscdevacr
+      shell: bash
+ 
+    - name: Push Docker image to Azure Container Registry
+      run: docker push orxpbmm3puscdevacr.azurecr.io/test/orx-m3p-experience-api:${{ github.run_number }}
+      shell: bash
+
+  deploy-dev:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    runs-on: uhg-runner
+    needs: build-dev
+    environment: Development
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+ 
+    - name: Replace Tokens
+      run: sed -i "s/__IMAGE_VERSION__/${{ github.run_number }}/g" ${{ github.workspace }}/deployment/development/deployment.yml 
+      shell: bash
+
+    - name: 'Log into Azure using github secret AZURE_CREDENTIALS'
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: 'Run az commands'
+      shell: bash
+      run: |
+        az account show
+
+    - name: Set up kubelogin for non-interactive login
+      uses: azure/use-kubelogin@v1
+      with:
+        kubelogin-version: 'v0.0.25'
+ 
+    - name: Get K8s context
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: 'orx-pbm-m3p-dev-us-c-rg'
+        cluster-name: 'orx-pbm-m3p-dev-us-c-api-aks'
+        admin: 'false'
+        use-kubelogin: 'true'
+ 
+    - name: Deploys application
+      uses: Azure/k8s-deploy@v4
+      with:
+        action: deploy
+        manifests: ${{ github.workspace }}/deployment/development/deployment.yml
+        namespace: 'm3p-dev'
+        images: |
+          orxpbmm3puscdevacr.azurecr.io/orx-m3p-experience-api:${{ github.run_number }}
+
+  deploy-test:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    runs-on: uhg-runner
+    needs: build-test
+    environment: Testing
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+ 
+    - name: Replace Tokens
+      run: sed -i "s/__IMAGE_VERSION__/${{ github.run_number }}/g" ${{ github.workspace }}/deployment/development/deployment-test.yml
+      shell: bash
+
+    - name: 'Log into Azure using github secret AZURE_CREDENTIALS'
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+ 
+    - name: 'Run az commands'
+      shell: bash
+      run: |
+        az account show
+ 
+    - name: Set up kubelogin for non-interactive login
+      uses: azure/use-kubelogin@v1
+      with:
+        kubelogin-version: 'v0.0.25'
+ 
+    - name: Get K8s context
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: 'orx-pbm-m3p-test-us-c-rg'
+        cluster-name: 'orx-pbm-m3p-test-us-c-api-aks'
+        admin: 'false'
+        use-kubelogin: 'true'
+ 
+    - name: Deploys application
+      uses: Azure/k8s-deploy@v4
+      with:
+        action: deploy
+        manifests: ${{ github.workspace }}/deployment/development/deployment-test.yml
+        namespace: 'm3p-tst'
+        images: |
+          orxpbmm3puscdevacr.azurecr.io/test/orx-m3p-experience-api:${{ github.run_number }}
