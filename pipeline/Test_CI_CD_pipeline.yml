@@ -1,12 +1,12 @@
-name: CICD-Pipeline
+name: Testing_CICD-Pipeline
 on:
   workflow_dispatch:
-#  push:
-#    branches:
-#      - develop
-#  pull_request:
-#    branches:
-#      - develop
+  push:
+    branches:
+      - develop
+  pull_request:
+    branches:
+      - develop
 jobs:
   codeQL-analyze:
     name: codeQL analyze
