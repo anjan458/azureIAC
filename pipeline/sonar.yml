@@ -1,0 +1,62 @@
+name: SonarQube Scan with JUnit Tests
+
+on:
+  pull_request:
+    branches: [develop]
+
+jobs:
+  sonar:
+    name: SonarQube Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up JDK
+      uses: actions/setup-java@v2
+      with:
+        java-version: '21'    
+        distribution: 'temurin'
+        overwrite-settings: false
+
+    - name: Cache Maven packages
+      uses: actions/cache@v2
+      with:
+        path: /home/runner/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: ${{ runner.os }}-maven-
+
+    - name: Build and Sonar Analyze
+      run: mvn -B -e verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -DskipTests -Dsonar.projectBaseDir=src -Dsonar.buildbreaker.skip=true -Dmaven.repo.local=/home/runner/.m2/repository
+      env:
+        GITHUB_TOKEN: ${{ secrets.GHEC_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+    - name: SonarQube Scan
+      uses: uhg-actions/sonarqube-scan-action@master
+      with:
+        projectBaseDir: .
+        args: >
+          -Dsonar.qualitygate.wait=true
+          -Dsonar.buildbreaker.skip=true
+          -Dsonar.projectKey=com.optumrx.m3p:orx-m3p-experience-api
+          -Dsonar.sources=.
+          -Dsonar.verbose=true
+          -Dsonar.java.binaries=target/classes
+          -Dsonar.verbose=true
+      env:
+        SONAR_TOKEN: "${{ secrets.SONAR_TOKEN }}"
+        SONAR_HOST_URL: "${{ secrets.SONAR_HOST_URL }}"
+
+    - name: SonarQube Quality Gate check
+      id: sonarqube-quality-gate-check
+      uses: uhg-actions/sonarqube-quality-gate-action@master
+      timeout-minutes: 5
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+    - name: "Display SonarQube Quality Gate Status"
+      run: echo "The Quality Gate status is ${{ steps.sonarqube-quality-gate-check.outputs.quality-gate-status }}"
